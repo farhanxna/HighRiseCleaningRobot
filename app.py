@@ -147,6 +147,9 @@ def process_frames():
             window_max = 0
             last_update_time = t
 
+            # **Menambahkan kondisi untuk memastikan PWM tidak melebihi 100%**
+            if display_count > 8:
+                display_rpm = 100.0  # Set PWM to 100% if stains exceed 8
             # Langsung set nilai PWM motor sesuai dengan display_rpm
             nilaiPWM.ChangeDutyCycle(display_rpm)  # Mengubah duty cycle PWM langsung sesuai display_rpm
 
@@ -170,4 +173,3 @@ if __name__ == '__main__':
         # Pastikan untuk menghentikan PWM dan membersihkan GPIO saat program dihentikan
         nilaiPWM.stop()  # Menghentikan PWM
         GPIO.cleanup()  # Membersihkan GPIO untuk memastikan tidak ada konfigurasi yang tersisa
-
