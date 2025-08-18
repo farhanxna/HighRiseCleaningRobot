@@ -33,7 +33,7 @@ model = attempt_load(model_path, map_location=device)
 if half:
     model.half()
 model.eval()
-print(f"✅ Model loaded on {device} (FP16: {half})")
+print(f"Model loaded on {device} (FP16: {half})")
 
 # =========================
 # Buka Kamera
@@ -150,7 +150,7 @@ def process_frames():
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("⚠️  Frame kosong dari kamera, menghentikan loop.")
+            print("Frame kosong dari kamera, menghentikan loop.")
             break
 
         t = time.time()
@@ -233,7 +233,7 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\nDihentikan oleh pengguna (Ctrl+C).")
     except Exception as e:
-        print(f"❌ Terjadi error: {e}")
+        print(f"Terjadi error: {e}")
     finally:
         # Cleanup resource
         try:

@@ -24,13 +24,13 @@ model = attempt_load(model_path, map_location=device)
 if half:
     model.half()
 model.eval()
-print(f"✅ Model loaded on {device} (FP16: {half})")
+print(f"Model loaded on {device} (FP16: {half})")
 
 # ---------------------------------------------------
 # Buka kamera (index 0). Ganti 0 jika butuh kamera lain.
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
-    print("❌ Gagal membuka kamera!")
+    print("Gagal membuka kamera!")
     exit(1)
 
 # Ambil resolusi frame dari kamera
@@ -41,10 +41,10 @@ fps_input = cap.get(cv2.CAP_PROP_FPS) or 30  # default 30 jika FPS tidak tersedi
 # (Optional) Siapkan video writer jika ingin merekam output
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 out = cv2.VideoWriter('output_camera.mp4', fourcc, fps_input, (width, height))
-print(f"📼 Output camera akan disimpan di: output_camera.mp4")
+print(f"Output camera akan disimpan di: output_camera.mp4")
 # ---------------------------------------------------
 
-# Posisi garis merah (75% tinggi frame)
+# Posisi garis merah (60% tinggi frame)
 line_position = int(height * 0.60)
 
 # Inisialisasi tracker SORT
@@ -82,26 +82,66 @@ nilaiPWM.start(0)
 # Menyimpan nilai duty cycle saat ini
 current_pwm_value = 0
 
-# Definisi fungsi Fuzzy Sugeno
-def sugeno(x):
-    mu1 = max(min((3 - x) / 3, 1), 0)  # Sedikit
-    if x < 1 or x > 7:
-        mu2 = 0
-    elif x <= 4:
-        mu2 = (x - 1) / 3
+# =========================
+# Definisi fungsi Fuzzy Sugeno (disesuaikan sesuai spesifikasi)
+# =========================
+def sugeno(x_in):
+    """
+    x_in: jumlah noda (0..8)
+    Himpunan:
+      μ_Sedikit: [0–4], 1 di [0–1], turun ke 0 di 4
+      μ_Sedang : [1–7], naik (1,4], turun (4,7), puncak di 4
+      μ_Banyak : [4–8], 0 di <=4, naik 4→6, 1 di >6
+    Konsekuen:
+      z1 = 40*μ_Sedikit          (0–40)
+      z2 = 40*μ_Sedang + 30      (30–70)
+      z3 = 40*μ_Banyak + 60      (60–100)
+    Defuzzifikasi: weighted average
+    """
+    # Guard domain ke [0,8]
+    x = max(0.0, min(float(x_in), 8.0))
+
+    # μ_Sedikit
+    if 0 <= x <= 1:
+        mu_sedikit = 1.0
+    elif 1 < x <= 4:
+        mu_sedikit = (4.0 - x) / 3.0
     else:
-        mu2 = (7 - x) / 3             # Sedang
-    mu3 = max(min((x - 5) / 3, 1), 0)  # Banyak
+        mu_sedikit = 0.0
 
-    z1 = 5 * x + 40
-    z2 = 7.5 * x + 40
-    z3 = 10 * x + 20
+    # μ_Sedang
+    if x <= 1 or x >= 7:
+        mu_sedang = 0.0
+    elif 1 < x <= 4:
+        mu_sedang = (x - 1.0) / 3.0
+    elif 4 < x < 7:
+        mu_sedang = (7.0 - x) / 3.0
+    else:  # x == 4
+        mu_sedang = 1.0
 
-    denom = mu1 + mu2 + mu3
-    if denom == 0:
+    # μ_Banyak
+    if x < 4:
+        mu_banyak = 0.0
+    elif 4 < x <= 6:
+        mu_banyak = (x - 4.0) / 2.0
+    elif x > 6:
+        mu_banyak = 1.0
+    else:  # x == 4
+        mu_banyak = 0.0
+
+    # Konsekuen (sesuai tabel)
+    z1 = 40.0 * mu_sedikit
+    z2 = 40.0 * mu_sedang + 30.0
+    z3 = 40.0 * mu_banyak + 60.0
+
+    # Agregasi Sugeno
+    w1, w2, w3 = mu_sedikit, mu_sedang, mu_banyak
+    denom = w1 + w2 + w3
+    if denom == 0.0:
         return 0.0
-    rpm = (mu1 * z1 + mu2 * z2 + mu3 * z3) / denom
-    return max(0.0, min(rpm, 100.0))
+
+    pwm = (w1 * z1 + w2 * z2 + w3 * z3) / denom
+    return max(0.0, min(pwm, 100.0))
 
 # Setup Flask app
 app = Flask(__name__)
@@ -110,6 +150,10 @@ app = Flask(__name__)
 def generate_frames():
     global last_update_time, window_max
     crossed_ids = set()  # Variabel untuk melacak objek yang melewati garis
+    total_crossed = 0
+    display_count = 0
+    display_rpm = 0.0
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -151,16 +195,17 @@ def generate_frames():
         # Setiap 3 detik, perbarui display_count & display_rpm
         if t - last_update_time >= 3.0:
             display_count = window_max
-            display_rpm = sugeno(display_count)  # Menghitung nilai RPM berdasarkan deteksi objek
+            display_rpm = sugeno(display_count)  # Menghitung nilai PWM berdasarkan deteksi objek
             print(f"[3s Update] Noda max: {display_count}, RPM fuzzy: {display_rpm:.2f}%")
             window_max = 0
             last_update_time = t
 
-            # **Menambahkan kondisi untuk memastikan PWM tidak melebihi 100%**
+            # Fail-safe: jika count > 8, paksa 100%
             if display_count > 8:
-                display_rpm = 100.0  # Set PWM to 100% if stains exceed 8
-            # Langsung set nilai PWM motor sesuai dengan display_rpm
-            nilaiPWM.ChangeDutyCycle(display_rpm)  # Mengubah duty cycle PWM langsung sesuai display_rpm
+                display_rpm = 100.0
+
+            # Set nilai PWM motor sesuai display_rpm
+            nilaiPWM.ChangeDutyCycle(display_rpm)
             GPIO.output(LED, GPIO.HIGH)
 
         # Update tracker dan hitung total unik melewati garis
@@ -181,7 +226,7 @@ def generate_frames():
                     (10, 30), font, 1, (0,255,255), 2)
         cv2.putText(frame, f'Noda di dalam kotak: {display_count}',
                     (10, line_position + 30), font, 0.7, (255,255,255), 2)
-        cv2.putText(frame, f'RPM (fuzzy): {display_rpm:.2f}%',
+        cv2.putText(frame, f'PWM (fuzzy): {display_rpm:.2f}%',
                     (10, line_position + 60), font, 0.7, (255,255,255), 2)
 
         # Encode frame sebagai JPEG dan kirim ke browser
@@ -193,7 +238,7 @@ def generate_frames():
 # Define the route for video streaming
 @app.route('/')
 def video():
-        return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 # Run Flask app
 if __name__ == '__main__':
@@ -203,5 +248,11 @@ if __name__ == '__main__':
         print("Program dihentikan oleh pengguna.")
     finally:
         # Pastikan untuk menghentikan PWM dan membersihkan GPIO saat program dihentikan
-        nilaiPWM.stop()  # Menghentikan PWM
-        GPIO.cleanup()  # Membersihkan GPIO untuk memastikan tidak ada konfigurasi yang tersisa
+        try:
+            nilaiPWM.stop()
+        except Exception:
+            pass
+        try:
+            GPIO.cleanup()
+        except Exception:
+            pass
